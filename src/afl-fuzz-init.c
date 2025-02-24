@@ -495,7 +495,9 @@ static void shuffle_ptrs(afl_state_t *afl, void **ptrs, u32 cnt) {
 }
 
 /* Read all testcases from foreign input directories, then queue them for
-   testing. Called at startup and at sync intervals.
+   testing. Called at sync intervals. Use env AFL_IMPORT_FIRST to sync at
+   startup (but may delay the startup depending on the amount of fails
+   and speed of execution).
    Does not descend into subdirectories! */
 
 void read_foreign_testcases(afl_state_t *afl, int first) {
@@ -1019,7 +1021,7 @@ void perform_dry_run(afl_state_t *afl) {
 
           }
 
-          if (!q->was_fuzzed) {
+          if (unlikely(!q->was_fuzzed)) {
 
             q->was_fuzzed = 1;
             afl->reinit_table = 1;
@@ -1228,6 +1230,32 @@ void perform_dry_run(afl_state_t *afl) {
           if (unlikely(fd < 0)) { PFATAL("Unable to create '%s'", crash_fn); }
           ck_write(fd, use_mem, read_len, crash_fn);
           close(fd);
+
+#ifdef __linux__
+          if (afl->fsrv.nyx_mode) {
+
+            u8 crash_log_fn[PATH_MAX];
+
+            snprintf(crash_log_fn, PATH_MAX, "%s.log", crash_fn);
+            fd = open(crash_log_fn, O_WRONLY | O_CREAT | O_EXCL,
+                      DEFAULT_PERMISSION);
+            if (unlikely(fd < 0)) {
+
+              PFATAL("Unable to create '%s'", crash_log_fn);
+
+            }
+
+            u32 nyx_aux_string_len = afl->fsrv.nyx_handlers->nyx_get_aux_string(
+                afl->fsrv.nyx_runner, afl->fsrv.nyx_aux_string,
+                afl->fsrv.nyx_aux_string_len);
+
+            ck_write(fd, afl->fsrv.nyx_aux_string, nyx_aux_string_len,
+                     crash_log_fn);
+            close(fd);
+
+          }
+
+#endif
 
           afl->last_crash_time = get_cur_time();
           afl->last_crash_execs = afl->fsrv.total_execs;
@@ -1686,8 +1714,12 @@ static u8 delete_files(u8 *path, u8 *prefix) {
 
   while ((d_ent = readdir(d))) {
 
-    if (d_ent->d_name[0] != '.' &&
-        (!prefix || !strncmp(d_ent->d_name, prefix, strlen(prefix)))) {
+    if ((d_ent->d_name[0] != '.' &&
+         (!prefix || !strncmp(d_ent->d_name, prefix, strlen(prefix))))
+        /* heiko: don't forget the SHA1 files */
+        || strspn(d_ent->d_name, "0123456789abcdef") ==
+               2 * 20                           /* TODO use 2 * HASH_LENGTH */
+    ) {
 
       u8 *fname = alloc_printf("%s/%s", path, d_ent->d_name);
       if (unlink(fname)) { PFATAL("Unable to delete '%s'", fname); }
@@ -2296,11 +2328,23 @@ void setup_dirs_fds(afl_state_t *afl) {
     afl->fsrv.plot_file = fdopen(fd, "w");
     if (!afl->fsrv.plot_file) { PFATAL("fdopen() failed"); }
 
-    fprintf(
-        afl->fsrv.plot_file,
-        "# relative_time, cycles_done, cur_item, corpus_count, "
-        "pending_total, pending_favs, map_size, saved_crashes, "
-        "saved_hangs, max_depth, execs_per_sec, total_execs, edges_found\n");
+    fprintf(afl->fsrv.plot_file,
+            "# relative_time, cycles_done, cur_item, corpus_count, "
+            "pending_total, pending_favs, map_size, saved_crashes, "
+            "saved_hangs, max_depth, execs_per_sec, total_execs, edges_found, "
+            "total_crashes, servers_count");
+
+    if (afl->san_binary_length) {
+
+      for (u8 i = 0; i < afl->san_binary_length; i++) {
+
+        fprintf(afl->fsrv.plot_file, ", sand_fsrv%u_exec", i);
+
+      }
+
+    }
+
+    fprintf(afl->fsrv.plot_file, "\n");
 
   } else {
 
@@ -2441,22 +2485,20 @@ void check_crash_handling(void) {
 
   if (read(fd, &fchar, 1) == 1 && fchar == '|') {
 
-    SAYF(
-        "\n" cLRD "[-] " cRST
-        "Hmm, your system is configured to send core dump notifications to an\n"
-        "    external utility. This will cause issues: there will be an "
-        "extended delay\n"
-        "    between stumbling upon a crash and having this information "
-        "relayed to the\n"
-        "    fuzzer via the standard waitpid() API.\n"
-        "    If you're just testing, set "
-        "'AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1'.\n\n"
+    SAYF("\n" cLRD "[-] " cRST
+         "Your system is configured to send core dump notifications to an\n"
+         "    external utility. This will cause issues: there will be an "
+         "extended delay\n"
+         "    between stumbling upon a crash and having this information "
+         "relayed to the\n"
+         "    fuzzer via the standard waitpid() API.\n"
+         "    If you're just experimenting, set "
+         "'AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1'.\n\n"
 
-        "    To avoid having crashes misinterpreted as timeouts, please log in "
-        "as root\n"
-        "    and temporarily modify /proc/sys/kernel/core_pattern, like so:\n\n"
+         "    To avoid having crashes misinterpreted as timeouts, please \n"
+         "    temporarily modify /proc/sys/kernel/core_pattern, like so:\n\n"
 
-        "    echo core >/proc/sys/kernel/core_pattern\n");
+         "    echo core | sudo tee /proc/sys/kernel/core_pattern\n");
 
     if (!getenv("AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES")) {
 
@@ -2717,7 +2759,11 @@ void fix_up_sync(afl_state_t *afl) {
 
   }
 
-  if (strlen(afl->sync_id) > 32) { FATAL("Fuzzer ID too long"); }
+  if (strlen(afl->sync_id) > 50) {
+
+    FATAL("sync_id max length is 50 characters");
+
+  }
 
   x = alloc_printf("%s/%s", afl->out_dir, afl->sync_id);
 
@@ -2861,6 +2907,7 @@ void check_binary(afl_state_t *afl, u8 *fname) {
   if (strchr(fname, '/') || !(env_path = getenv("PATH"))) {
 
     afl->fsrv.target_path = ck_strdup(fname);
+
 #ifdef __linux__
     if (afl->fsrv.nyx_mode) {
 
@@ -2883,6 +2930,7 @@ void check_binary(afl_state_t *afl, u8 *fname) {
     }
 
 #endif
+
     if (stat(afl->fsrv.target_path, &st) || !S_ISREG(st.st_mode) ||
         !(st.st_mode & 0111) || (f_len = st.st_size) < 4) {
 
@@ -3060,9 +3108,9 @@ void check_binary(afl_state_t *afl, u8 *fname) {
       afl_memmem(f_data, f_len, SHM_ENV_VAR, strlen(SHM_ENV_VAR) + 1)) {
 
     SAYF("\n" cLRD "[-] " cRST
-         "This program appears to be instrumented with afl-gcc, but is being "
-         "run in\n"
-         "    QEMU mode (-Q). This is probably not what you "
+         "This program appears to be instrumented with AFL++ compilers, but is "
+         "being run\n"
+         "    in QEMU mode (-Q). This is probably not what you "
          "want -\n"
          "    this setup will be slow and offer no practical benefits.\n");
 

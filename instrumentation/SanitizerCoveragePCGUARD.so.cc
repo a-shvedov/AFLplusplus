@@ -23,6 +23,10 @@
   #include "llvm/IR/CFG.h"
 #endif
 #include "llvm/IR/Constant.h"
+#if LLVM_VERSION_MAJOR >= 20
+  #include "llvm/IR/Constants.h"
+  #include "llvm/IR/ValueSymbolTable.h"
+#endif
 #include "llvm/IR/DataLayout.h"
 #if LLVM_VERSION_MAJOR < 15
   #include "llvm/IR/DebugInfo.h"
@@ -63,11 +67,16 @@
 #if LLVM_VERSION_MAJOR < 15
   #include "llvm/Support/raw_ostream.h"
 #endif
-#if LLVM_VERSION_MAJOR < 17
-  #include "llvm/Transforms/Instrumentation.h"
+#if LLVM_VERSION_MAJOR < 20
+  #if LLVM_VERSION_MAJOR < 17
+    #include "llvm/Transforms/Instrumentation.h"
+  #else
+    #include "llvm/TargetParser/Triple.h"
+  #endif
 #else
-  #include "llvm/TargetParser/Triple.h"
+  #include "llvm/Transforms/Utils/Instrumentation.h"
 #endif
+
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
@@ -161,7 +170,9 @@ class ModuleSanitizerCoverageAFL
 
   void SetNoSanitizeMetadata(Instruction *I) {
 
-#if LLVM_VERSION_MAJOR >= 16
+#if LLVM_VERSION_MAJOR >= 19
+    I->setNoSanitizeMetadata();
+#elif LLVM_VERSION_MAJOR >= 16
     I->setMetadata(LLVMContext::MD_nosanitize, MDNode::get(*C, std::nullopt));
 #else
     I->setMetadata(I->getModule()->getMDKindID("nosanitize"),
@@ -179,7 +190,7 @@ class ModuleSanitizerCoverageAFL
   FunctionCallee  SanCovTraceSwitchFunction;
   GlobalVariable *SanCovLowestStack;
   Type *IntptrTy, *IntptrPtrTy, *Int64Ty, *Int64PtrTy, *Int32Ty, *Int32PtrTy,
-      *Int16Ty, *Int8Ty, *Int8PtrTy, *Int1Ty, *Int1PtrTy;
+      *Int16Ty, *Int8Ty, *Int8PtrTy, *Int1Ty, *Int1PtrTy, *PtrTy;
   Module           *CurModule;
   std::string       CurModuleUniqueId;
   Triple            TargetTriple;
@@ -215,7 +226,11 @@ llvmGetPassPluginInfo() {
             using OptimizationLevel = typename PassBuilder::OptimizationLevel;
 #endif
 #if LLVM_VERSION_MAJOR >= 16
+  #if LLVM_VERSION_MAJOR >= 20
+            PB.registerPipelineStartEPCallback(
+  #else
             PB.registerOptimizerEarlyEPCallback(
+  #endif
 #else
             PB.registerOptimizerLastEPCallback(
 #endif
@@ -246,8 +261,20 @@ PreservedAnalyses ModuleSanitizerCoverageAFL::run(Module                &M,
 
   };
 
-  if (ModuleSancov.instrumentModule(M, DTCallback, PDTCallback))
-    return PreservedAnalyses::none();
+  // TODO: Support LTO or llvm classic?
+  // Note we still need afl-compiler-rt so we just disable the instrumentation
+  // here.
+  if (!getenv("AFL_SAN_NO_INST")) {
+
+    if (ModuleSancov.instrumentModule(M, DTCallback, PDTCallback))
+      return PreservedAnalyses::none();
+
+  } else {
+
+    if (getenv("AFL_DEBUG")) { DEBUGF("Instrument disabled\n"); }
+
+  }
+
   return PreservedAnalyses::all();
 
 }
@@ -272,13 +299,19 @@ std::pair<Value *, Value *> ModuleSanitizerCoverageAFL::CreateSecStartEnd(
   if (!TargetTriple.isOSBinFormatCOFF())
     return std::make_pair(SecStart, SecEnd);
 
-  // Account for the fact that on windows-msvc __start_* symbols actually
-  // point to a uint64_t before the start of the array.
+    // Account for the fact that on windows-msvc __start_* symbols actually
+    // point to a uint64_t before the start of the array.
+#if LLVM_VERSION_MAJOR >= 19
+  auto GEP =
+      IRB.CreatePtrAdd(SecStart, ConstantInt::get(IntptrTy, sizeof(uint64_t)));
+  return std::make_pair(GEP, SecEnd);
+#else
   auto SecStartI8Ptr = IRB.CreatePointerCast(SecStart, Int8PtrTy);
   auto GEP = IRB.CreateGEP(Int8Ty, SecStartI8Ptr,
                            ConstantInt::get(IntptrTy, sizeof(uint64_t)));
   return std::make_pair(IRB.CreatePointerCast(GEP, PointerType::getUnqual(Ty)),
                         SecEnd);
+#endif
 
 }
 
@@ -293,7 +326,7 @@ Function *ModuleSanitizerCoverageAFL::CreateInitCallsForSections(
   Type     *PtrTy = PointerType::getUnqual(Ty);
   std::tie(CtorFunc, std::ignore) = createSanitizerCtorAndInitFunctions(
       M, CtorName, InitFunctionName, {PtrTy, PtrTy}, {SecStart, SecEnd});
-  assert(CtorFunc->getName() == CtorName);
+  // assert(CtorFunc->getName() == CtorName);
 
   if (TargetTriple.supportsCOMDAT()) {
 
@@ -309,7 +342,7 @@ Function *ModuleSanitizerCoverageAFL::CreateInitCallsForSections(
 
   if (TargetTriple.isOSBinFormatCOFF()) {
 
-    // In COFF files, if the contructors are set as COMDAT (they are because
+    // In COFF files, if the constructors are set as COMDAT (they are because
     // COFF supports COMDAT) and the linker flag /OPT:REF (strip unreferenced
     // functions and data) is used, the constructors get stripped. To prevent
     // this, give the constructors weak ODR linkage and ensure the linker knows
@@ -370,6 +403,7 @@ bool ModuleSanitizerCoverageAFL::instrumentModule(
   Int16Ty = IRB.getInt16Ty();
   Int8Ty = IRB.getInt8Ty();
   Int1Ty = IRB.getInt1Ty();
+  PtrTy = PointerType::getUnqual(*C);
 
   LLVMContext &Ctx = M.getContext();
   AFLMapPtr =
@@ -572,7 +606,8 @@ void ModuleSanitizerCoverageAFL::instrumentFunction(
 
   if (F.empty()) return;
   if (!isInInstrumentList(&F, FMNAME)) return;
-  if (F.getName().find(".module_ctor") != std::string::npos)
+  // if (F.getName().find(".module_ctor") != std::string::npos)
+  if (F.getName().contains(".module_ctor"))
     return;  // Should not instrument sanitizer init functions.
 #if LLVM_VERSION_MAJOR >= 18
   if (F.getName().starts_with("__sanitizer_"))
@@ -595,6 +630,9 @@ void ModuleSanitizerCoverageAFL::instrumentFunction(
       isAsynchronousEHPersonality(classifyEHPersonality(F.getPersonalityFn())))
     return;
   if (F.hasFnAttribute(Attribute::NoSanitizeCoverage)) return;
+#if LLVM_VERSION_MAJOR >= 19
+  if (F.hasFnAttribute(Attribute::DisableSanitizerInstrumentation)) return;
+#endif
   if (Options.CoverageType >= SanitizerCoverageOptions::SCK_Edge)
     SplitAllCriticalEdges(
         F, CriticalEdgeSplittingOptions().setIgnoreUnreachableDests());
@@ -692,16 +730,16 @@ GlobalVariable *ModuleSanitizerCoverageAFL::CreatePCArray(
 
     if (&F.getEntryBlock() == AllBlocks[i]) {
 
-      PCs.push_back((Constant *)IRB.CreatePointerCast(&F, IntptrPtrTy));
-      PCs.push_back((Constant *)IRB.CreateIntToPtr(
-          ConstantInt::get(IntptrTy, 1), IntptrPtrTy));
+      PCs.push_back((Constant *)IRB.CreatePointerCast(&F, PtrTy));
+      PCs.push_back(
+          (Constant *)IRB.CreateIntToPtr(ConstantInt::get(IntptrTy, 1), PtrTy));
 
     } else {
 
       PCs.push_back((Constant *)IRB.CreatePointerCast(
-          BlockAddress::get(AllBlocks[i]), IntptrPtrTy));
+          BlockAddress::get(AllBlocks[i]), PtrTy));
 #if LLVM_VERSION_MAJOR >= 16
-      PCs.push_back(Constant::getNullValue(IntptrPtrTy));
+      PCs.push_back(Constant::getNullValue(PtrTy));
 #else
       PCs.push_back((Constant *)IRB.CreateIntToPtr(
           ConstantInt::get(IntptrTy, 0), IntptrPtrTy));
@@ -711,10 +749,10 @@ GlobalVariable *ModuleSanitizerCoverageAFL::CreatePCArray(
 
   }
 
-  auto *PCArray = CreateFunctionLocalArrayInSection(N * 2, F, IntptrPtrTy,
-                                                    SanCovPCsSectionName);
+  auto *PCArray =
+      CreateFunctionLocalArrayInSection(N * 2, F, PtrTy, SanCovPCsSectionName);
   PCArray->setInitializer(
-      ConstantArray::get(ArrayType::get(IntptrPtrTy, N * 2), PCs));
+      ConstantArray::get(ArrayType::get(PtrTy, N * 2), PCs));
   PCArray->setConstant(true);
 
   return PCArray;
@@ -822,7 +860,12 @@ bool ModuleSanitizerCoverageAFL::InjectCoverage(
         StringRef FuncName = Callee->getName();
         if (FuncName.compare(StringRef("__afl_coverage_interesting"))) continue;
 
+#if LLVM_VERSION_MAJOR >= 20
+        // test canary
+        InstrumentationIRBuilder IRB(callInst);
+#else
         IRBuilder<> IRB(callInst);
+#endif
 
         if (!FunctionGuardArray) {
 

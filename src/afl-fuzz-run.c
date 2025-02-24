@@ -33,6 +33,7 @@
 #endif
 
 #include "cmplog.h"
+#include "asanfuzz.h"
 
 #ifdef PROFILING
 u64 time_spent_working = 0;
@@ -41,8 +42,9 @@ u64 time_spent_working = 0;
 /* Execute target application, monitoring for timeouts. Return status
    information. The called program will update afl->fsrv->trace_bits. */
 
-fsrv_run_result_t __attribute__((hot))
-fuzz_run_target(afl_state_t *afl, afl_forkserver_t *fsrv, u32 timeout) {
+fsrv_run_result_t __attribute__((hot)) fuzz_run_target(afl_state_t      *afl,
+                                                       afl_forkserver_t *fsrv,
+                                                       u32 timeout) {
 
 #ifdef PROFILING
   static u64      time_spent_start = 0;
@@ -59,6 +61,27 @@ fuzz_run_target(afl_state_t *afl, afl_forkserver_t *fsrv, u32 timeout) {
 #endif
 
   fsrv_run_result_t res = afl_fsrv_run_target(fsrv, timeout, &afl->stop_soon);
+
+#ifdef __AFL_CODE_COVERAGE
+  if (unlikely(!fsrv->persistent_trace_bits)) {
+
+    // On the first run, we allocate the persistent map to collect coverage.
+    fsrv->persistent_trace_bits = (u8 *)malloc(fsrv->map_size);
+    memset(fsrv->persistent_trace_bits, 0, fsrv->map_size);
+
+  }
+
+  for (u32 i = 0; i < fsrv->map_size; ++i) {
+
+    if (fsrv->persistent_trace_bits[i] != 255 && fsrv->trace_bits[i]) {
+
+      fsrv->persistent_trace_bits[i]++;
+
+    }
+
+  }
+
+#endif
 
   /* If post_run() function is defined in custom mutator, the function will be
      called each time after AFL++ executes the target program. */
@@ -90,8 +113,8 @@ fuzz_run_target(afl_state_t *afl, afl_forkserver_t *fsrv, u32 timeout) {
    old file is unlinked and a new one is created. Otherwise, afl->fsrv.out_fd is
    rewound and truncated. */
 
-u32 __attribute__((hot))
-write_to_testcase(afl_state_t *afl, void **mem, u32 len, u32 fix) {
+u32 __attribute__((hot)) write_to_testcase(afl_state_t *afl, void **mem,
+                                           u32 len, u32 fix) {
 
   u8 sent = 0;
 
@@ -173,7 +196,17 @@ write_to_testcase(afl_state_t *afl, void **mem, u32 len, u32 fix) {
 
       if (el->afl_custom_fuzz_send) {
 
-        el->afl_custom_fuzz_send(el->data, *mem, new_size);
+        if (!afl->afl_env.afl_custom_mutator_late_send) {
+
+          el->afl_custom_fuzz_send(el->data, *mem, new_size);
+
+        } else {
+
+          afl->fsrv.custom_input = *mem;
+          afl->fsrv.custom_input_len = new_size;
+
+        }
+
         sent = 1;
 
       }
@@ -185,17 +218,17 @@ write_to_testcase(afl_state_t *afl, void **mem, u32 len, u32 fix) {
       /* everything as planned. use the potentially new data. */
       afl_fsrv_write_to_testcase(&afl->fsrv, *mem, new_size);
 
-      if (likely(!afl->afl_env.afl_post_process_keep_original)) {
+    }
 
-        len = new_size;
+    if (likely(!afl->afl_env.afl_post_process_keep_original)) {
 
-      } else {
+      len = new_size;
 
-        /* restore the original memory which was saved in new_mem */
-        *mem = new_mem;
-        afl_swap_bufs(AFL_BUF_PARAM(out), AFL_BUF_PARAM(out_scratch));
+    } else {
 
-      }
+      /* restore the original memory which was saved in new_mem */
+      *mem = new_mem;
+      afl_swap_bufs(AFL_BUF_PARAM(out), AFL_BUF_PARAM(out_scratch));
 
     }
 
@@ -455,6 +488,10 @@ u8 calibrate_case(afl_state_t *afl, struct queue_entry *q, u8 *use_mem,
 
   }
 
+  u8 saved_afl_post_process_keep_original =
+      afl->afl_env.afl_post_process_keep_original;
+  afl->afl_env.afl_post_process_keep_original = 1;
+
   /* we need a dummy run if this is LTO + cmplog */
   if (unlikely(afl->shm.cmplog_mode)) {
 
@@ -629,6 +666,9 @@ u8 calibrate_case(afl_state_t *afl, struct queue_entry *q, u8 *use_mem,
 
 abort_calibration:
 
+  afl->afl_env.afl_post_process_keep_original =
+      saved_afl_post_process_keep_original;
+
   if (new_bits == 2 && !q->has_new_cov) {
 
     q->has_new_cov = 1;
@@ -665,6 +705,8 @@ abort_calibration:
 /* Grab interesting test cases from other fuzzers. */
 
 void sync_fuzzers(afl_state_t *afl) {
+
+  if (unlikely(afl->afl_env.afl_no_sync)) { return; }
 
   DIR           *sd;
   struct dirent *sd_ent;
@@ -1140,8 +1182,8 @@ abort_trimming:
    error conditions, returning 1 if it's time to bail out. This is
    a helper function for fuzz_one(). */
 
-u8 __attribute__((hot))
-common_fuzz_stuff(afl_state_t *afl, u8 *out_buf, u32 len) {
+u8 __attribute__((hot)) common_fuzz_stuff(afl_state_t *afl, u8 *out_buf,
+                                          u32 len) {
 
   u8 fault;
 

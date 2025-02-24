@@ -131,8 +131,9 @@ static const u8 count_class_binary[256] = {
 
 };
 
-static void kill_child() {
+static void kill_child(int signal) {
 
+  (void)signal;
   timed_out = 1;
   if (fsrv->child_pid > 0) {
 
@@ -740,14 +741,18 @@ static void set_up_environment(afl_forkserver_t *fsrv, char **argv) {
       ck_free(frida_binary);
 
       setenv("LD_PRELOAD", frida_afl_preload, 1);
+#ifdef __APPLE__
       setenv("DYLD_INSERT_LIBRARIES", frida_afl_preload, 1);
+#endif
 
     } else {
 
       /* CoreSight mode uses the default behavior. */
 
       setenv("LD_PRELOAD", getenv("AFL_PRELOAD"), 1);
+#ifdef __APPLE__
       setenv("DYLD_INSERT_LIBRARIES", getenv("AFL_PRELOAD"), 1);
+#endif
 
     }
 
@@ -755,7 +760,9 @@ static void set_up_environment(afl_forkserver_t *fsrv, char **argv) {
 
     u8 *frida_binary = find_afl_binary(argv[0], "afl-frida-trace.so");
     setenv("LD_PRELOAD", frida_binary, 1);
+#ifdef __APPLE__
     setenv("DYLD_INSERT_LIBRARIES", frida_binary, 1);
+#endif
     ck_free(frida_binary);
 
   }
@@ -1253,7 +1260,7 @@ int main(int argc, char **argv_orig, char **envp) {
 
         break;
 
-      /* FIXME: We want to use -P for consistency, but it is already unsed for
+      /* FIXME: We want to use -P for consistency, but it is already unused for
        * undocumenetd feature "Another afl-cmin specific feature." */
       case 'A':                                           /* CoreSight mode */
 
@@ -1301,7 +1308,7 @@ int main(int argc, char **argv_orig, char **envp) {
         break;
 #else
       case 'X':
-        FATAL("Nyx mode is only availabe on linux...");
+        FATAL("Nyx mode is only available on linux...");
         break;
 #endif
 
@@ -1678,7 +1685,7 @@ int main(int argc, char **argv_orig, char **envp) {
     } else {
 
       if ((coverage_map = (u8 *)malloc(map_size + 64)) == NULL)
-        FATAL("coult not grab memory");
+        FATAL("could not grab memory");
       edges_only = false;
 
     }

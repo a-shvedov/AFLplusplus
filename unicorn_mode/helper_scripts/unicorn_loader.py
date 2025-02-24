@@ -26,7 +26,7 @@ from unicorn.arm64_const import *
 from unicorn.x86_const import *
 from unicorn.mips_const import *
 
-# If Capstone libraries are availible (only check once)
+# If Capstone libraries are available (only check once)
 try:
     from capstone import *
 
@@ -90,7 +90,7 @@ class UnicornSimpleHeap(object):
     _chunks_freed = [] # List of all freed chunks
     _debug_print = False  # True to print debug information
 
-    def __init__(self, uc, debug_print=False， uaf_check=False):
+    def __init__(self, uc, debug_print=False, uaf_check=False):
         self._uc = uc
         self._debug_print = debug_print
 

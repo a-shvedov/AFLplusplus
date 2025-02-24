@@ -151,7 +151,7 @@ def deinit():  # optional for Python
     splicing - or anything else - and can also be ignored. If you are not
     using this additional data then define `splice_optout` (see above).
     This function is optional.
-    Returing a length of 0 is valid and is interpreted as skipping this
+    Returning a length of 0 is valid and is interpreted as skipping this
     one mutation result.
     For non-Python: the returned output buffer is under **your** memory
     management!
@@ -198,6 +198,11 @@ def deinit():  # optional for Python
     This method can be used if you want to send data to the target yourself,
     e.g. via IPC. This replaces some usage of utils/afl_proxy but requires
     that you start the target with afl-fuzz.
+
+    Setting `AFL_CUSTOM_MUTATOR_LATE_SEND` will call the afl_custom_fuzz_send()
+    function after the target has been restarted. (This is needed for e.g. TCP
+    services.)
+
     Example: [custom_mutators/examples/custom_send.c](../custom_mutators/examples/custom_send.c)
 
 - `queue_new_entry` (optional):

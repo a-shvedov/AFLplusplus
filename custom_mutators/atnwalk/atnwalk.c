@@ -180,7 +180,8 @@ size_t fail_fatal(int fd_socket, uint8_t **out_buf) {
 
   if (fd_socket != -1) { close(fd_socket); }
   *out_buf = NULL;
-  return 0;
+  fprintf(stderr, "atnwalk.socket not found in current directory!\n");
+  exit(-1);
 
 }
 
@@ -408,7 +409,7 @@ size_t afl_custom_fuzz(atnwalk_mutator_t *data, uint8_t *buf, size_t buf_size,
 
   } else {
 
-    // new_size fits into buf, so re-use it
+    // new_size fits into buf, so reuse it
     *out_buf = buf;
 
   }

@@ -104,9 +104,6 @@ void afl_state_init(afl_state_t *afl, uint32_t map_size) {
   afl->min_length = 1;
   afl->max_length = MAX_FILE;
   afl->switch_fuzz_mode = STRATEGY_SWITCH_TIME * 1000;
-#ifndef NO_SPLICING
-  afl->use_splicing = 1;
-#endif
   afl->q_testcase_max_cache_size = TESTCASE_CACHE_SIZE * 1048576UL;
   afl->q_testcase_max_cache_entries = 64 * 1024;
 
@@ -279,11 +276,32 @@ void read_afl_environment(afl_state_t *afl, char **envp) {
             afl->afl_env.afl_final_sync =
                 get_afl_env(afl_environment_variables[i]) ? 1 : 0;
 
+          } else if (!strncmp(env, "AFL_NO_SYNC",
+
+                              afl_environment_variable_len)) {
+
+            afl->afl_env.afl_no_sync =
+                get_afl_env(afl_environment_variables[i]) ? 1 : 0;
+
+          } else if (!strncmp(env, "AFL_NO_FASTRESUME",
+
+                              afl_environment_variable_len)) {
+
+            afl->afl_env.afl_no_fastresume =
+                get_afl_env(afl_environment_variables[i]) ? 1 : 0;
+
           } else if (!strncmp(env, "AFL_CUSTOM_MUTATOR_ONLY",
 
                               afl_environment_variable_len)) {
 
             afl->afl_env.afl_custom_mutator_only =
+                get_afl_env(afl_environment_variables[i]) ? 1 : 0;
+
+          } else if (!strncmp(env, "AFL_CUSTOM_MUTATOR_LATE_SEND",
+
+                              afl_environment_variable_len)) {
+
+            afl->afl_env.afl_custom_mutator_late_send =
                 get_afl_env(afl_environment_variables[i]) ? 1 : 0;
 
           } else if (!strncmp(env, "AFL_CMPLOG_ONLY_NEW",
@@ -746,7 +764,7 @@ void afl_state_deinit(afl_state_t *afl) {
 void afl_states_stop(void) {
 
   /* We may be inside a signal handler.
-   Set flags first, send kill signals to child proceses later. */
+   Set flags first, send kill signals to child processes later. */
   LIST_FOREACH(&afl_states, afl_state_t, {
 
     el->stop_soon = 1;
@@ -762,8 +780,9 @@ void afl_states_stop(void) {
     if (el->fsrv.fsrv_pid > 0) {
 
       kill(el->fsrv.fsrv_pid, el->fsrv.fsrv_kill_signal);
+      usleep(100);
       /* Make sure the forkserver does not end up as zombie. */
-      waitpid(el->fsrv.fsrv_pid, NULL, 0);
+      waitpid(el->fsrv.fsrv_pid, NULL, WNOHANG);
 
     }
 

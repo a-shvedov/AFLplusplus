@@ -75,6 +75,7 @@
 #include <sys/ioctl.h>
 #include <sys/file.h>
 #include <sys/types.h>
+#include "asanfuzz.h"
 
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || \
     defined(__NetBSD__) || defined(__DragonFly__)
@@ -114,6 +115,10 @@
 
 #ifdef __APPLE__
   #include <TargetConditionals.h>
+#endif
+
+#ifndef __has_builtin
+  #define __has_builtin(x) 0
 #endif
 
 #undef LIST_FOREACH                                 /* clashes with FreeBSD */
@@ -236,7 +241,6 @@ struct queue_entry {
       custom,                           /* Marker for custom mutators       */
       stats_mutated;                    /* stats: # of mutations performed  */
 
-  u8 *trace_mini;                       /* Trace bytes, if kept             */
   u32 tc_ref;                           /* Trace bytes ref count            */
 
 #ifdef INTROSPECTION
@@ -246,13 +250,11 @@ struct queue_entry {
   double perf_score,                    /* performance score                */
       weight;
 
-  u8 *testcase_buf;                     /* The testcase buffer, if loaded.  */
-
-  u8             *cmplog_colorinput;    /* the result buf of colorization   */
-  struct tainted *taint;                /* Taint information from CmpLog    */
-
-  struct queue_entry *mother;           /* queue entry this based on        */
-
+  struct queue_entry *mother;            /* queue entry this based on        */
+  u8                 *trace_mini;        /* Trace bytes, if kept             */
+  u8                 *testcase_buf;      /* The testcase buffer, if loaded.  */
+  u8                 *cmplog_colorinput; /* the result buf of colorization   */
+  struct tainted     *taint;             /* Taint information from CmpLog    */
   struct skipdet_entry *skipdet_e;
 
 };
@@ -448,8 +450,9 @@ extern char *power_names[POWER_SCHEDULES_NUM];
 typedef struct afl_env_vars {
 
   u8 afl_skip_cpufreq, afl_exit_when_done, afl_no_affinity, afl_skip_bin_check,
-      afl_dumb_forksrv, afl_import_first, afl_custom_mutator_only, afl_no_ui,
-      afl_force_ui, afl_i_dont_care_about_missing_crashes, afl_bench_just_one,
+      afl_dumb_forksrv, afl_import_first, afl_custom_mutator_only,
+      afl_custom_mutator_late_send, afl_no_ui, afl_force_ui,
+      afl_i_dont_care_about_missing_crashes, afl_bench_just_one,
       afl_bench_until_crash, afl_debug_child, afl_autoresume, afl_cal_fast,
       afl_cycle_schedules, afl_expand_havoc, afl_statsd, afl_cmplog_only_new,
       afl_exit_on_seed_issues, afl_try_affinity, afl_ignore_problems,
@@ -457,7 +460,7 @@ typedef struct afl_env_vars {
       afl_no_startup_calibration, afl_no_warn_instability,
       afl_post_process_keep_original, afl_crashing_seeds_as_new_crash,
       afl_final_sync, afl_ignore_seed_problems, afl_disable_redundant,
-      afl_sha1_filenames;
+      afl_sha1_filenames, afl_no_sync, afl_no_fastresume;
 
   u8 *afl_tmpdir, *afl_custom_mutator_library, *afl_python_module, *afl_path,
       *afl_hang_tmout, *afl_forksrv_init_tmout, *afl_preload,
@@ -608,7 +611,11 @@ typedef struct afl_state {
   u8 *var_bytes;                        /* Bytes that appear to be variable */
 
 #define N_FUZZ_SIZE (1 << 21)
+#define N_FUZZ_SIZE_BITMAP (1 << 29)
   u32 *n_fuzz;
+  u8  *n_fuzz_dup;
+  u8  *classified_n_fuzz;
+  u8  *simplified_n_fuzz;
 
   volatile u8 stop_soon,                /* Ctrl-C pressed?                  */
       clear_screen;                     /* Window resized?                  */
@@ -656,6 +663,7 @@ typedef struct afl_state {
       switch_fuzz_mode,                 /* auto or fixed fuzz mode          */
       calibration_time_us,              /* Time spend on calibration        */
       sync_time_us,                     /* Time spend on sync               */
+      cmplog_time_us,                   /* Time spend on cmplog             */
       trim_time_us;                     /* Time spend on trimming           */
 
   u32 slowest_exec_ms,                  /* Slowest testcase non hang in ms  */
@@ -725,6 +733,13 @@ typedef struct afl_state {
   char            *cmplog_binary;
   afl_forkserver_t cmplog_fsrv;     /* cmplog has its own little forkserver */
 
+  /* ASAN Fuzing */
+  char            *san_binary[MAX_EXTRA_SAN_BINARY];
+  afl_forkserver_t san_fsrvs[MAX_EXTRA_SAN_BINARY];
+  u8               san_binary_length; /* 0 means extra san binaries not given */
+  u32              san_case_status;
+  enum SanitizerAbstraction san_abstraction;
+
   /* Custom mutators */
   struct custom_mutator *mutator;
 
@@ -744,7 +759,7 @@ typedef struct afl_state {
                                   up to 256 */
 
   unsigned long long int last_avg_exec_update;
-  u32                    last_avg_execs;
+  u64                    last_avg_total_execs;
   double                 last_avg_execs_saved;
 
 /* foreign sync */
@@ -905,7 +920,7 @@ struct custom_mutator {
   /**
    * Opt-out of a splicing input for the fuzz mutator
    *
-   * Empty dummy function. It's presence tells afl-fuzz not to pass a
+   * Empty dummy function. Its presence tells afl-fuzz not to pass a
    * splice data pointer and len.
    *
    * @param data pointer returned in afl_custom_init by this custom mutator
@@ -937,12 +952,12 @@ struct custom_mutator {
   /**
    * Describe the current testcase, generated by the last mutation.
    * This will be called, for example, to give the written testcase a name
-   * after a crash ocurred. It can help to reproduce crashing mutations.
+   * after a crash occurred. It can help to reproduce crashing mutations.
    *
    * (Optional)
    *
    * @param data pointer returned by afl_customm_init for this custom mutator
-   * @paramp[in] max_description_len maximum size avaliable for the description.
+   * @paramp[in] max_description_len maximum size available for the description.
    *             A longer return string is legal, but will be truncated.
    * @return A valid ptr to a 0-terminated string.
    *         An empty or NULL return will result in a default description
@@ -1119,7 +1134,7 @@ struct custom_mutator {
 void afl_state_init(afl_state_t *, uint32_t map_size);
 void afl_state_deinit(afl_state_t *);
 
-/* Set stop_soon flag on all childs, kill all childs */
+/* Set stop_soon flag on all children, kill all children */
 void afl_states_stop(void);
 /* Set clear_screen flag on all states */
 void afl_states_clear_screen(void);
@@ -1226,6 +1241,7 @@ void show_init_stats(afl_state_t *);
 void update_calibration_time(afl_state_t *afl, u64 *time);
 void update_trim_time(afl_state_t *afl, u64 *time);
 void update_sync_time(afl_state_t *afl, u64 *time);
+void update_cmplog_time(afl_state_t *afl, u64 *time);
 
 /* StatsD */
 
@@ -1276,6 +1292,7 @@ void   get_core_count(afl_state_t *);
 void   fix_up_sync(afl_state_t *);
 void   check_asan_opts(afl_state_t *);
 void   check_binary(afl_state_t *, u8 *);
+u64    get_binary_hash(u8 *fn);
 void   check_if_tty(afl_state_t *);
 void   save_cmdline(afl_state_t *, u32, char **);
 void   read_foreign_testcases(afl_state_t *, int);

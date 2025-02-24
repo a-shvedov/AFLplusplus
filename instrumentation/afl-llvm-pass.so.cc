@@ -6,9 +6,6 @@
               Adrian Herrera <adrian.herrera@anu.edu.au>,
               Michal Zalewski
 
-   LLVM integration design comes from Laszlo Szekeres. C bits copied-and-pasted
-   from afl-as.c are Michal's fault.
-
    NGRAM previous location coverage comes from Adrian Herrera.
 
    Copyright 2015, 2016 Google Inc. All rights reserved.
@@ -19,10 +16,6 @@
    You may obtain a copy of the License at:
 
      https://www.apache.org/licenses/LICENSE-2.0
-
-   This library is plugged into LLVM when invoking clang through afl-clang-fast.
-   It tells the compiler to add code roughly equivalent to the bits discussed
-   in ../afl-as.h.
 
  */
 
@@ -117,8 +110,7 @@ class AFLCoverage : public ModulePass {
 }  // namespace
 
 #if LLVM_VERSION_MAJOR >= 11                        /* use new pass manager */
-extern "C" ::llvm::PassPluginLibraryInfo LLVM_ATTRIBUTE_WEAK
-llvmGetPassPluginInfo() {
+extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
 
   return {LLVM_PLUGIN_API_VERSION, "AFLCoverage", "v0.1",
           /* lambda to insert our pass into the pass pipeline. */
@@ -129,7 +121,11 @@ llvmGetPassPluginInfo() {
             using OptimizationLevel = typename PassBuilder::OptimizationLevel;
     #endif
     #if LLVM_VERSION_MAJOR >= 16
+      #if LLVM_VERSION_MAJOR >= 20
+            PB.registerPipelineStartEPCallback(
+      #else
             PB.registerOptimizerEarlyEPCallback(
+      #endif
     #else
             PB.registerOptimizerLastEPCallback(
     #endif
@@ -226,6 +222,24 @@ bool AFLCoverage::runOnModule(Module &M) {
   setvbuf(stdout, NULL, _IONBF, 0);
 
   if (getenv("AFL_DEBUG")) debug = 1;
+
+#if LLVM_VERSION_MAJOR >= 11                        /* use new pass manager */
+  if (getenv("AFL_SAN_NO_INST")) {
+
+    if (debug) { fprintf(stderr, "Instrument disabled\n"); }
+    return PreservedAnalyses::all();
+
+  }
+
+#else
+  if (getenv("AFL_SAN_NO_INST")) {
+
+    if (debug) { fprintf(stderr, "Instrument disabled\n"); }
+    return true;
+
+  }
+
+#endif
 
   if ((isatty(2) && !getenv("AFL_QUIET")) || getenv("AFL_DEBUG") != NULL) {
 

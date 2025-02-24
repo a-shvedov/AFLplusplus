@@ -30,6 +30,9 @@ sudo apt-get install -y build-essential python3-dev automake cmake git flex biso
 sudo apt-get install -y lld-14 llvm-14 llvm-14-dev clang-14 || sudo apt-get install -y lld llvm llvm-dev clang
 sudo apt-get install -y gcc-$(gcc --version|head -n1|sed 's/\..*//'|sed 's/.* //')-plugin-dev libstdc++-$(gcc --version|head -n1|sed 's/\..*//'|sed 's/.* //')-dev
 sudo apt-get install -y ninja-build # for QEMU mode
+sudo apt-get install -y cpio libcapstone-dev # for Nyx mode
+sudo apt-get install -y wget curl # for Frida mode
+sudo apt-get install -y python3-pip # for Unicorn mode
 git clone https://github.com/AFLplusplus/AFLplusplus
 cd AFLplusplus
 make distrib
@@ -87,7 +90,6 @@ These build options exist:
 * PROFILING - compile afl-fuzz with profiling information
 * INTROSPECTION - compile afl-fuzz with mutation introspection
 * NO_PYTHON - disable python support
-* NO_SPLICING - disables splicing mutation in afl-fuzz, not recommended for normal fuzzing
 * NO_UTF - do not use UTF-8 for line rendering in status screen (fallback to G1 box drawing, of vanilla AFL)
 * NO_NYX - disable building nyx mode dependencies
 * NO_CORESIGHT - disable building coresight (arm64 only)

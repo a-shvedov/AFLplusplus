@@ -5,9 +5,6 @@
    Written by Laszlo Szekeres <lszekeres@google.com> and
               Michal Zalewski
 
-   LLVM integration design comes from Laszlo Szekeres. C bits copied-and-pasted
-   from afl-as.c are Michal's fault.
-
    Copyright 2015, 2016 Google Inc. All rights reserved.
    Copyright 2019-2024 AFLplusplus Project. All rights reserved.
 
@@ -16,10 +13,6 @@
    You may obtain a copy of the License at:
 
      https://www.apache.org/licenses/LICENSE-2.0
-
-   This library is plugged into LLVM when invoking clang through afl-clang-fast.
-   It tells the compiler to add code roughly equivalent to the bits discussed
-   in ../afl-as.h.
 
  */
 
@@ -90,12 +83,17 @@ llvmGetPassPluginInfo() {
 #if LLVM_VERSION_MAJOR <= 13
             using OptimizationLevel = typename PassBuilder::OptimizationLevel;
 #endif
-            PB.registerOptimizerLastEPCallback(
-                [](ModulePassManager &MPM, OptimizationLevel OL) {
+            PB.registerOptimizerLastEPCallback([](ModulePassManager &MPM,
+                                                  OptimizationLevel  OL
+#if LLVM_VERSION_MAJOR >= 20
+                                                  ,
+                                                  ThinOrFullLTOPhase Phase
+#endif
+                                               ) {
 
-                  MPM.addPass(AFLcheckIfInstrument());
+              MPM.addPass(AFLcheckIfInstrument());
 
-                });
+            });
 
           }};
 

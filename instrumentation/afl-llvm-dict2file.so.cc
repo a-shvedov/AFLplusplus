@@ -120,12 +120,17 @@ llvmGetPassPluginInfo() {
   #if LLVM_VERSION_MAJOR <= 13
             using OptimizationLevel = typename PassBuilder::OptimizationLevel;
   #endif
-            PB.registerOptimizerLastEPCallback(
-                [](ModulePassManager &MPM, OptimizationLevel OL) {
+            PB.registerOptimizerLastEPCallback([](ModulePassManager &MPM,
+                                                  OptimizationLevel  OL
+  #if LLVM_VERSION_MAJOR >= 20
+                                                  ,
+                                                  ThinOrFullLTOPhase Phase
+  #endif
+                                               ) {
 
-                  MPM.addPass(AFLdict2filePass());
+              MPM.addPass(AFLdict2filePass());
 
-                });
+            });
 
           }};
 
@@ -660,6 +665,13 @@ bool AFLdict2filePass::runOnModule(Module &M) {
 
             Value       *op2 = callInst->getArgOperand(2);
             ConstantInt *ilen = dyn_cast<ConstantInt>(op2);
+
+            if (!ilen) {
+
+              op2 = callInst->getArgOperand(1);
+              ilen = dyn_cast<ConstantInt>(op2);
+
+            }
 
             if (ilen) {
 

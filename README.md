@@ -1,10 +1,10 @@
 # American Fuzzy Lop plus plus (AFL++)
 
-<img align="right" src="https://raw.githubusercontent.com/AFLplusplus/Website/main/static/aflpp_bg.svg" alt="AFL++ logo" width="250" heigh="250">
+<img align="right" src="https://raw.githubusercontent.com/AFLplusplus/Website/main/static/aflpp_bg.svg" alt="AFL++ logo" width="250" height="250">
 
-Release version: [4.20c](https://github.com/AFLplusplus/AFLplusplus/releases)
+Release version: [4.31c](https://github.com/AFLplusplus/AFLplusplus/releases)
 
-GitHub version: 4.21a
+GitHub version: 4.32a
 
 Repository:
 [https://github.com/AFLplusplus/AFLplusplus](https://github.com/AFLplusplus/AFLplusplus)
@@ -230,6 +230,7 @@ Thank you! (For people sending pull requests - please add yourself to this list
     Ruben ten Hove                        Joey Jiao
     fuzzah                                @intrigus-lgtm
     Yaakov Saxon                          Sergej Schumilo
+    Ziqiao Kong
   ```
 
 </details>
